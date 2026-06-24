@@ -8,7 +8,7 @@ import 'package:pulse_chat/core/theme/app_text_style.dart';
 /// most-pressed element on screen, reinforcing "Pulse" (two signals
 /// converging) without literal iconography.
 class PulseButton extends StatelessWidget {
-  const PulseButton({super.key, required this.label, required this.onPressed, this.isLoading = false});
+  const PulseButton({required this.label, required this.onPressed, super.key, this.isLoading = false});
 
   final String label;
   final VoidCallback onPressed;

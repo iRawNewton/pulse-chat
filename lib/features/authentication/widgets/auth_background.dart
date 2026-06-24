@@ -1,15 +1,11 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:pulse_chat/core/theme/app_colors.dart';
 
-/// Signature visual for the auth flow: two soft, overlapping "chat bubble"
-/// blobs in the primary (coral) and secondary (teal) brand colors, drifting
-/// slowly past each other behind the form. Reads as "conversation" without
-/// using a literal chat-bubble icon, and gives the screen a single bold,
-/// branded moment instead of a generic gradient header.
 class AuthBackground extends StatefulWidget {
-  const AuthBackground({super.key, required this.child});
+  const AuthBackground({required this.child, super.key});
 
   final Widget child;
 
@@ -23,7 +19,11 @@ class _AuthBackgroundState extends State<AuthBackground> with SingleTickerProvid
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(vsync: this, duration: const Duration(seconds: 14))..repeat();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 14),
+    );
+    unawaited(_controller.repeat());
   }
 
   @override
@@ -36,7 +36,7 @@ class _AuthBackgroundState extends State<AuthBackground> with SingleTickerProvid
   Widget build(BuildContext context) {
     final colors = AppColors(context);
 
-    return Container(
+    return ColoredBox(
       color: colors.background,
       child: Stack(
         children: [
@@ -74,7 +74,7 @@ class _AuthBackgroundState extends State<AuthBackground> with SingleTickerProvid
           // Soft blur/scrim so blobs stay atmospheric, not distracting,
           // and the form on top always has enough contrast.
           BackdropFilter(
-            filter: ColorFilter.mode(Colors.transparent, BlendMode.dst),
+            filter: const ColorFilter.mode(Colors.transparent, BlendMode.dst),
             child: Container(color: Colors.transparent),
           ),
           widget.child,
@@ -115,13 +115,13 @@ class _BlobClipper extends CustomClipper<Path> {
   Path getClip(Size size) {
     final w = size.width;
     final h = size.height;
-    final path = Path();
-    path.moveTo(w * 0.50, 0);
-    path.cubicTo(w * 0.85, 0, w, h * 0.20, w, h * 0.50);
-    path.cubicTo(w, h * 0.78, w * 0.80, h, w * 0.48, h);
-    path.cubicTo(w * 0.18, h, 0, h * 0.80, 0, h * 0.50);
-    path.cubicTo(0, h * 0.22, w * 0.16, 0, w * 0.50, 0);
-    path.close();
+    final path = Path()
+      ..moveTo(w * 0.50, 0)
+      ..cubicTo(w * 0.85, 0, w, h * 0.20, w, h * 0.50)
+      ..cubicTo(w, h * 0.78, w * 0.80, h, w * 0.48, h)
+      ..cubicTo(w * 0.18, h, 0, h * 0.80, 0, h * 0.50)
+      ..cubicTo(0, h * 0.22, w * 0.16, 0, w * 0.50, 0)
+      ..close();
     return path;
   }
 

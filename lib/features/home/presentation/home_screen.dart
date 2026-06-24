@@ -3,15 +3,17 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pulse_chat/config/routes/app_routes.dart';
-import 'package:pulse_chat/core/database/cubit/settings_cubit.dart';
 import 'package:pulse_chat/core/theme/app_colors.dart';
 import 'package:pulse_chat/core/theme/app_text_style.dart';
+import 'package:pulse_chat/features/authentication/bloc/auth_bloc.dart';
+import 'package:pulse_chat/features/authentication/bloc/auth_state.dart';
 import 'package:pulse_chat/features/authentication/widgets/auth_background.dart';
 import 'package:pulse_chat/features/home/data/chat_data.dart';
 import 'package:pulse_chat/features/home/data/chat_item_model.dart';
 import 'package:pulse_chat/features/home/data/nav_item.dart';
 import 'package:pulse_chat/features/home/widgets/app_bar_icon.dart';
 import 'package:pulse_chat/features/home/widgets/chat_tile.dart';
+import 'package:pulse_chat/features/home/widgets/home_popup_menu.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -63,22 +65,29 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   @override
   Widget build(BuildContext context) {
     final colors = AppColors(context);
-    return Scaffold(
-      // backgroundColor: colors.background,
-      backgroundColor: Colors.transparent,
-      resizeToAvoidBottomInset: true,
-      body: AuthBackground(
-        child: Column(
-          children: [
-            _buildAppBar(colors),
-            Expanded(
-              child: _selectedIndex == 0 ? _buildChatList(colors) : _buildPlaceholder(colors, navItems[_selectedIndex].label),
-            ),
-          ],
+    return BlocListener<AuthBloc, AuthState>(
+      listener: (context, state) {
+        if (state is Unauthenticated) {
+          context.go(AppRoutes.login);
+        }
+      },
+      child: Scaffold(
+        // backgroundColor: colors.background,
+        backgroundColor: Colors.transparent,
+        resizeToAvoidBottomInset: true,
+        body: AuthBackground(
+          child: Column(
+            children: [
+              _buildAppBar(colors),
+              Expanded(
+                child: _selectedIndex == 0 ? _buildChatList(colors) : _buildPlaceholder(colors, navItems[_selectedIndex].label),
+              ),
+            ],
+          ),
         ),
+        bottomNavigationBar: _buildBottomNav(colors),
+        floatingActionButton: _selectedIndex == 0 ? _buildFAB(colors) : null,
       ),
-      bottomNavigationBar: _buildBottomNav(colors),
-      floatingActionButton: _selectedIndex == 0 ? _buildFAB(colors) : null,
     );
   }
 
@@ -86,7 +95,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   Widget _buildAppBar(AppColors colors) {
     return Container(
-      color: colors.background,
+      color: Colors.transparent,
       padding: EdgeInsets.only(
         top: MediaQuery.of(context).padding.top,
       ),
@@ -97,6 +106,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             child: _isSearching ? _buildSearchBar(colors) : _buildTitleBar(colors),
           ),
           _buildFilterChips(colors),
+          8.verticalSpace,
         ],
       ),
     );
@@ -109,7 +119,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       child: Row(
         children: [
           Text(
-            'Pulse Chat',
+            'Pulse',
             style: AppTextStyles.w700.copyWith(
               fontSize: 26.sp,
               color: colors.textPrimary,
@@ -129,7 +139,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             onTap: () {},
           ),
           SizedBox(width: 4.w),
-          _buildMenuButton(colors),
+          HomePopupMenu(colors: colors),
         ],
       ),
     );
@@ -226,74 +236,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     );
   }
 
-  Widget _buildMenuButton(AppColors colors) {
-    return PopupMenuButton<String>(
-      icon: Icon(Icons.more_vert_rounded, color: colors.textPrimary, size: 22.sp),
-      color: colors.card,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16.r)),
-      elevation: 8,
-      offset: Offset(0, 40.h),
-      itemBuilder: (context) => [
-        _popupItem(
-          colors,
-          Icons.group_add_outlined,
-          'New Group',
-          onTap: () {},
-        ),
-        _popupItem(
-          colors,
-          Icons.broadcast_on_personal_outlined,
-          'New Broadcast',
-          onTap: () {},
-        ),
-        _popupItem(
-          colors,
-          Icons.star_outline_rounded,
-          'Starred Messages',
-          onTap: () {},
-        ),
-        _popupItem(
-          colors,
-          Icons.dynamic_feed,
-          'Starred Messages',
-          onTap: () async {
-            await context.read<SettingsCubit>().updateTheme(ThemeMode.dark);
-          },
-        ),
-        _popupItem(
-          colors,
-          Icons.settings_outlined,
-          'Settings',
-          onTap: () {},
-        ),
-      ],
-      onSelected: (_) {},
-    );
-  }
-
-  PopupMenuItem<String> _popupItem(AppColors colors, IconData icon, String label, {required void Function()? onTap}) {
-    return PopupMenuItem(
-      value: label,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: onTap,
-        child: Row(
-          children: [
-            Icon(icon, size: 20.sp, color: colors.textSecondary),
-            SizedBox(width: 12.w),
-            Text(
-              label,
-              style: AppTextStyles.w500.copyWith(
-                fontSize: 14.sp,
-                color: colors.textPrimary,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   // ── Chat List ────────────────────────────────
 
   Widget _buildChatList(AppColors colors) {
@@ -316,8 +258,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     );
   }
 
-  void _openChat(ChatItem chat) {
-    context.push(AppRoutes.chatScreen, extra: chat);
+  Future<void> _openChat(ChatItem chat) async {
+    await context.push(AppRoutes.chatScreen, extra: chat);
   }
 
   Widget _buildSectionLabel(String label, AppColors colors) {

@@ -11,7 +11,7 @@ import 'package:pulse_chat/core/theme/app_text_style.dart';
 /// email/password path reads as the primary action and Google as the
 /// fast alternative.
 class GoogleAuthButton extends StatelessWidget {
-  const GoogleAuthButton({super.key, required this.label, required this.onPressed, this.isLoading = false});
+  const GoogleAuthButton({required this.label, required this.onPressed, super.key, this.isLoading = false});
 
   final String label;
   final VoidCallback onPressed;

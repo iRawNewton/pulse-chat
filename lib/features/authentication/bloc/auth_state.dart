@@ -15,9 +15,8 @@ class AuthLoading extends AuthState {
 }
 
 class Authenticated extends AuthState {
-  final User user;
-
   const Authenticated(this.user);
+  final User user;
 }
 
 class Unauthenticated extends AuthState {
@@ -25,7 +24,6 @@ class Unauthenticated extends AuthState {
 }
 
 class AuthFailure extends AuthState {
-  final String error;
-
   const AuthFailure(this.error);
+  final String error;
 }

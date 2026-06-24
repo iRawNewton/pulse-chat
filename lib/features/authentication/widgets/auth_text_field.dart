@@ -9,10 +9,10 @@ import 'package:pulse_chat/core/theme/app_text_style.dart';
 /// password-visibility toggle when [obscureText] is provided.
 class AuthTextField extends StatefulWidget {
   const AuthTextField({
-    super.key,
     required this.controller,
     required this.label,
     required this.hint,
+    super.key,
     this.icon,
     this.keyboardType,
     this.obscureText = false,

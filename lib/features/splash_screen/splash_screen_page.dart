@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
@@ -23,7 +24,8 @@ class _SplashScreenPageState extends State<SplashScreenPage> with SingleTickerPr
     _heartbeatController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1100),
-    )..repeat();
+    );
+    unawaited(_heartbeatController.repeat());
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       context.read<AuthBloc>().add(const AuthCheckRequested());

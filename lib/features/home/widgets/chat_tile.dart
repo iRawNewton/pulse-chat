@@ -60,7 +60,7 @@ class ChatTile extends StatelessWidget {
                   child: Image.network(
                     chat.avatarUrl!,
                     fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => _avatarLetters(),
+                    errorBuilder: (_, _, _) => _avatarLetters(),
                   ),
                 )
               : chat.type == ChatType.group

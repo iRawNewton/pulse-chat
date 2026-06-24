@@ -1,8 +1,8 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:injectable/injectable.dart';
-import 'package:pulse_chat/features/authentication/data/auth_repository.dart';
 import 'package:pulse_chat/features/authentication/bloc/auth_event.dart';
 import 'package:pulse_chat/features/authentication/bloc/auth_state.dart';
+import 'package:pulse_chat/features/authentication/data/auth_repository.dart';
 
 @injectable
 class AuthBloc extends Bloc<AuthEvent, AuthState> {
@@ -42,7 +42,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       } else {
         emit(const AuthFailure('Failed to sign in. User is null.'));
       }
-    } catch (e) {
+    } on Exception catch (e) {
       emit(AuthFailure(e.toString()));
     }
   }
@@ -63,7 +63,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       } else {
         emit(const AuthFailure('Failed to create account. User is null.'));
       }
-    } catch (e) {
+    } on Exception catch (e) {
       emit(AuthFailure(e.toString()));
     }
   }
@@ -81,7 +81,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         // credential is null if user cancelled the sign in flow
         emit(const Unauthenticated());
       }
-    } catch (e) {
+    } on Exception catch (e) {
       emit(AuthFailure(e.toString()));
     }
   }
@@ -94,7 +94,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     try {
       await _authRepository.signOut();
       emit(const Unauthenticated());
-    } catch (e) {
+    } on Exception catch (e) {
       emit(AuthFailure(e.toString()));
     }
   }

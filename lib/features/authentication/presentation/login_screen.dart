@@ -186,7 +186,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             alignment: Alignment.centerRight,
                             child: TextButton(
                               onPressed: () {
-                                // TODO: navigate to forgot-password flow.
+                                // TODO(developer): navigate to forgot-password flow.
                               },
                               style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: Size(0, 32.h)),
                               child: Text(
@@ -214,8 +214,8 @@ class _LoginScreenState extends State<LoginScreen> {
                             style: AppTextStyles.w400.copyWith(fontSize: 14.sp, color: colors.textSecondary),
                           ),
                           GestureDetector(
-                            onTap: () {
-                              context.push(AppRoutes.signup);
+                            onTap: () async {
+                              await context.push(AppRoutes.signup);
                             },
                             child: Text(
                               'Sign up',
