@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:injectable/injectable.dart';
@@ -8,6 +9,7 @@ import 'package:injectable/injectable.dart';
 class AuthRepository {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseMessaging _messaging = FirebaseMessaging.instance;
   final GoogleSignIn _googleSignIn = GoogleSignIn();
 
   /// Stream to listen to auth state changes
@@ -26,15 +28,14 @@ class AuthRepository {
       email: email,
       password: password,
     );
+
     await credential.user?.updateDisplayName(name);
     await credential.user?.reload();
+
     final user = _auth.currentUser ?? credential.user;
     if (user != null) {
-      await _saveUserToFirestore(
-        user,
-        fallbackName: name,
-        authProvider: 'password',
-      );
+      await _saveUserToFirestore(user, fallbackName: name);
+      await _saveFCMToken(user.uid); // ← Added
     }
     return credential;
   }
@@ -44,32 +45,42 @@ class AuthRepository {
     required String email,
     required String password,
   }) async {
-    return _auth.signInWithEmailAndPassword(
+    final credential = await _auth.signInWithEmailAndPassword(
       email: email,
       password: password,
     );
+    if (credential.user != null) {
+      await _saveUserToFirestore(credential.user!);
+      await _saveFCMToken(credential.user!.uid); // ← Added
+    }
+    return credential;
   }
 
   /// Google Sign-In
   Future<UserCredential?> signInWithGoogle() async {
+    UserCredential? userCredential;
+
     if (kIsWeb) {
       final authProvider = GoogleAuthProvider();
-      final credential = await _auth.signInWithPopup(authProvider);
-      await _saveSignedInGoogleUser(credential);
-      return credential;
+      userCredential = await _auth.signInWithPopup(authProvider);
     } else {
       final googleUser = await _googleSignIn.signIn();
       if (googleUser == null) return null;
 
       final googleAuth = await googleUser.authentication;
-      final AuthCredential credential = GoogleAuthProvider.credential(
+      final credential = GoogleAuthProvider.credential(
         idToken: googleAuth.idToken,
         accessToken: googleAuth.accessToken,
       );
-      final userCredential = await _auth.signInWithCredential(credential);
-      await _saveSignedInGoogleUser(userCredential);
-      return userCredential;
+      userCredential = await _auth.signInWithCredential(credential);
     }
+
+    if (userCredential.user != null) {
+      await _saveSignedInGoogleUser(userCredential);
+      await _saveFCMToken(userCredential.user!.uid);
+    }
+
+    return userCredential;
   }
 
   /// Sign out
@@ -78,64 +89,81 @@ class AuthRepository {
       await _googleSignIn.signOut();
     }
     await _auth.signOut();
+    // Optional: Clear token on logout
+    await _messaging.deleteToken();
   }
+
+  // ─────────────────────────────────────────────
+  // Private Helpers
+  // ─────────────────────────────────────────────
 
   Future<void> _saveSignedInGoogleUser(UserCredential credential) async {
     final user = credential.user;
     if (user == null) return;
-
-    await _saveUserToFirestore(
-      user,
-      authProvider: 'google.com',
-    );
+    await _saveUserToFirestore(user);
   }
 
   Future<void> _saveUserToFirestore(
     User user, {
-    required String authProvider,
     String? fallbackName,
   }) async {
-    final providerIds = user.providerData
-        .map((provider) => provider.providerId)
-        .where((providerId) => providerId.isNotEmpty)
-        .toSet()
-        .toList();
-
-    final providerProfiles = user.providerData.map((provider) {
-      return <String, Object?>{
-        'providerId': provider.providerId,
-        'uid': provider.uid,
-        'displayName': provider.displayName,
-        'email': provider.email,
-        'phoneNumber': provider.phoneNumber,
-        'photoURL': provider.photoURL,
-      };
-    }).toList();
-
     final userDocument = _firestore.collection('users').doc(user.uid);
-    final snapshot = await userDocument.get();
-    final userData = <String, Object?>{
+
+    final profile = user.providerData.isNotEmpty ? user.providerData.first : null;
+
+    final userData = <String, dynamic>{
       'uid': user.uid,
-      'name': user.displayName ?? fallbackName,
-      'email': user.email,
-      'phoneNumber': user.phoneNumber,
-      'photoURL': user.photoURL,
+      'email': user.email ?? profile?.email,
+      'name': _firstNonEmpty([user.displayName, fallbackName, profile?.displayName]),
+      'photoURL': user.photoURL ?? profile?.photoURL,
       'isEmailVerified': user.emailVerified,
-      'isAnonymous': user.isAnonymous,
-      'authProvider': authProvider,
-      'providerIds': providerIds,
-      'providerProfiles': providerProfiles,
-      'metadata': <String, Object?>{
-        'creationTime': user.metadata.creationTime,
-        'lastSignInTime': user.metadata.lastSignInTime,
-      },
-      'updatedAt': FieldValue.serverTimestamp(),
-    };
+      'phoneNumber': user.phoneNumber,
+      'lastLoginAt': FieldValue.serverTimestamp(),
+    }..removeWhere((key, value) => value == null);
 
-    if (!snapshot.exists) {
-      userData['createdAt'] = FieldValue.serverTimestamp();
+    try {
+      await userDocument.set(userData, SetOptions(merge: true));
+    } on FirebaseException catch (e) {
+      if (e.code == 'permission-denied') {
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        await user.getIdToken(true);
+        await userDocument.set(userData, SetOptions(merge: true));
+      } else {
+        rethrow;
+      }
     }
+  }
 
-    await userDocument.set(userData, SetOptions(merge: true));
+  /// Save / Update FCM Token
+  Future<void> _saveFCMToken(String userId) async {
+    try {
+      final token = await _messaging.getToken();
+      if (token == null) return;
+
+      await _firestore.collection('users').doc(userId).set({
+        'fcmToken': token,
+        'tokenUpdatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      // Optional: Listen for token refresh
+      _messaging.onTokenRefresh.listen((newToken) async {
+        await _firestore.collection('users').doc(userId).update({
+          'fcmToken': newToken,
+          'tokenUpdatedAt': FieldValue.serverTimestamp(),
+        });
+      });
+    } on Exception catch (e) {
+      debugPrint('Failed to save FCM token: $e');
+    }
+  }
+
+  String? _firstNonEmpty(List<String?> values) {
+    for (final value in values) {
+      final trimmed = value?.trim();
+      if (trimmed != null && trimmed.isNotEmpty) {
+        return trimmed;
+      }
+    }
+    return null;
   }
 }
