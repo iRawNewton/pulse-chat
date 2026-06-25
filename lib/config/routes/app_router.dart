@@ -3,6 +3,8 @@ import 'package:pulse_chat/config/routes/app_routes.dart';
 import 'package:pulse_chat/features/authentication/presentation/login_screen.dart';
 import 'package:pulse_chat/features/authentication/presentation/signup_screen.dart';
 import 'package:pulse_chat/features/chats/presentation/chat_screen.dart';
+import 'package:pulse_chat/features/contacts/presentation/contacts_screen.dart';
+import 'package:pulse_chat/features/contacts/presentation/search_users_screen.dart';
 import 'package:pulse_chat/features/home/data/chat_item_model.dart';
 import 'package:pulse_chat/features/home/presentation/home_screen.dart';
 import 'package:pulse_chat/features/splash_screen/splash_screen_page.dart';
@@ -36,6 +38,14 @@ final appRouter = GoRouter(
           isGroup: chat?.type == ChatType.group,
         );
       },
+    ),
+    GoRoute(
+      path: AppRoutes.contacts,
+      builder: (context, state) => const ContactsScreen(),
+    ),
+    GoRoute(
+      path: AppRoutes.searchUsers,
+      builder: (context, state) => const SearchUsersScreen(),
     ),
   ],
 );

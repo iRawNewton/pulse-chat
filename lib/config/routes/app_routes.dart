@@ -6,4 +6,6 @@ class AppRoutes {
   static const signup = '/signup';
   static const home = '/home';
   static const chatScreen = '/chat-page';
+  static const contacts = '/contacts';
+  static const searchUsers = '/contacts/search';
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
@@ -379,7 +380,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   Widget _buildFAB(AppColors colors) {
     return FloatingActionButton(
-      onPressed: () {},
+      onPressed: () {
+        unawaited(context.push(AppRoutes.contacts));
+      },
       backgroundColor: colors.primary,
       foregroundColor: Colors.white,
       elevation: 4,
