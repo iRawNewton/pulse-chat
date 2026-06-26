@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:injectable/injectable.dart';
+import 'package:pretty_dio_logger/pretty_dio_logger.dart';
 import 'package:pulse_chat/core/network/api_config.dart';
 import 'package:pulse_chat/core/network/auth_interceptor.dart';
 
@@ -20,11 +21,7 @@ abstract class NetworkModule {
 
     if (kDebugMode) {
       dio.interceptors.add(
-        LogInterceptor(
-          requestBody: true,
-          responseHeader: false,
-          responseBody: true,
-        ),
+        PrettyDioLogger(/* requestHeader: true, */ responseHeader: true, requestBody: true),
       );
     }
 

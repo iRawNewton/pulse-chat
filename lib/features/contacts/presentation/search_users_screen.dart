@@ -207,6 +207,8 @@ class _SearchField extends StatelessWidget {
               );
             },
           ),
+          filled: true,
+          fillColor: colors.background,
         ),
       ),
     );
