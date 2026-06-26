@@ -1,12 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pulse_chat/config/routes/app_routes.dart';
+import 'package:pulse_chat/core/di/injection.dart';
 import 'package:pulse_chat/core/theme/app_colors.dart';
 import 'package:pulse_chat/core/theme/app_text_style.dart';
-import 'package:pulse_chat/features/chats/data/chat_data.dart';
 import 'package:pulse_chat/features/chats/data/chat_message_model.dart';
+import 'package:pulse_chat/features/chats/data/chat_realtime_service.dart';
 import 'package:pulse_chat/features/chats/widgets/date_chip.dart';
 import 'package:pulse_chat/features/chats/widgets/message_option_sheet.dart';
 import 'package:pulse_chat/features/chats/widgets/mic_button.dart';
@@ -18,11 +21,15 @@ class ChatScreen extends StatefulWidget {
   const ChatScreen({
     super.key,
     this.contactName = 'Aanya Sharma',
+    this.contactId,
+    this.chatId,
     this.isOnline = true,
     this.isGroup = false,
   });
 
   final String contactName;
+  final String? contactId;
+  final String? chatId;
   final bool isOnline;
   final bool isGroup;
 
@@ -31,44 +38,145 @@ class ChatScreen extends StatefulWidget {
 }
 
 class _ChatScreenState extends State<ChatScreen> {
-  late List<ChatMessage> _messages;
+  late final ChatRealtimeService _realtimeService;
+  late final String _chatId;
+  late final String? _receiverId;
+  List<ChatMessage> _messages = const [];
   final TextEditingController _inputController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final FocusNode _inputFocus = FocusNode();
   ChatMessage? _replyingTo;
   bool _showScrollDown = false;
   bool _isTyping = false;
+  bool _remoteTyping = false;
+  StreamSubscription<List<ChatMessage>>? _messagesSubscription;
+  StreamSubscription<RealtimeEvent>? _eventsSubscription;
 
   // Map messageId → GlobalKey so we can scroll to it
   final Map<String, GlobalKey> _messageKeys = {};
 
+  int _messagesLimit = 20;
+  bool _isSearching = false;
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+
+  List<ChatMessage> get _visibleMessages {
+    if (_messages.length <= _messagesLimit) {
+      return _messages;
+    }
+    return _messages.sublist(_messages.length - _messagesLimit);
+  }
+
+  List<ChatMessage> get _filteredMessages {
+    if (!_isSearching || _searchQuery.isEmpty) {
+      return _visibleMessages;
+    }
+    return _messages.where((msg) => msg.text.toLowerCase().contains(_searchQuery.toLowerCase())).toList();
+  }
+
   @override
   void initState() {
     super.initState();
-    _messages = ChatMessageData().buildSampleMessages();
-    for (final m in _messages) {
-      _messageKeys[m.id] = GlobalKey();
-    }
+    _realtimeService = getIt<ChatRealtimeService>();
+    _receiverId = widget.contactId;
+    _chatId = widget.chatId ?? widget.contactId ?? widget.contactName;
+    _messages = _realtimeService.currentMessagesFor(_chatId);
+    _syncMessageKeys(_messages);
+    _messagesSubscription = _realtimeService.messagesFor(_chatId).listen((messages) {
+      if (!mounted) return;
+      final oldLength = _messages.length;
+      setState(() {
+        _messages = messages;
+        _syncMessageKeys(messages);
+        if (messages.length > oldLength && oldLength > 0) {
+          _messagesLimit += messages.length - oldLength;
+        }
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom(animated: true));
+    });
+    _eventsSubscription = _realtimeService.events.listen(_handleRealtimeEvent);
+    unawaited(_realtimeService.connect());
     _inputController.addListener(() {
       final t = _inputController.text.trim().isNotEmpty;
-      if (t != _isTyping) setState(() => _isTyping = t);
+      if (t != _isTyping) {
+        setState(() => _isTyping = t);
+        _sendTyping(t);
+      }
+    });
+    _searchController.addListener(() {
+      if (mounted) {
+        setState(() {
+          _searchQuery = _searchController.text.trim();
+        });
+      }
     });
     _inputFocus.addListener(() {
       if (mounted) setState(() {});
     });
     _scrollController.addListener(() {
-      final show = _scrollController.offset > 200;
-      if (show != _showScrollDown) setState(() => _showScrollDown = show);
+      _updateScrollDownVisibility();
+
+      // Scroll Pagination
+      if (_scrollController.hasClients && _scrollController.offset <= 100 && _messagesLimit < _messages.length && !_isSearching) {
+        final oldExtent = _scrollController.position.maxScrollExtent;
+        final oldOffset = _scrollController.offset;
+        setState(() {
+          _messagesLimit = (_messagesLimit + 20).clamp(20, _messages.length);
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!_scrollController.hasClients) return;
+          final newExtent = _scrollController.position.maxScrollExtent;
+          final diff = newExtent - oldExtent;
+          if (diff > 0) {
+            _scrollController.jumpTo(oldOffset + diff);
+          }
+          _updateScrollDownVisibility();
+        });
+      }
     });
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
   }
 
   @override
   void dispose() {
+    _sendTyping(false);
+    if (_messagesSubscription != null) {
+      unawaited(_messagesSubscription!.cancel());
+    }
+    if (_eventsSubscription != null) {
+      unawaited(_eventsSubscription!.cancel());
+    }
     _inputController.dispose();
+    _searchController.dispose();
     _scrollController.dispose();
     _inputFocus.dispose();
     super.dispose();
+  }
+
+  void _syncMessageKeys(List<ChatMessage> messages) {
+    for (final message in messages) {
+      _messageKeys.putIfAbsent(message.id, GlobalKey.new);
+    }
+  }
+
+  void _handleRealtimeEvent(RealtimeEvent event) {
+    if (!mounted) return;
+    if (event.name == 'typing' && event.payload['chatId'] == _chatId) {
+      final status = event.payload['status'] as String?;
+      setState(() => _remoteTyping = status == 'typing_start');
+    }
+
+    if (event.name == 'message' && event.payload['chatId'] == _chatId) {
+      final senderId = event.payload['senderId'] as String?;
+      final messageId = event.payload['messageId'] as String?;
+      if (senderId != null && messageId != null && senderId == _receiverId) {
+        _realtimeService.sendMessageSeen(
+          messageId: messageId,
+          chatId: _chatId,
+          senderId: senderId,
+        );
+      }
+    }
   }
 
   Future<void> _scrollToBottom({bool animated = false}) async {
@@ -81,6 +189,18 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     } else {
       _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+    }
+    if (mounted && _showScrollDown) {
+      setState(() => _showScrollDown = false);
+    }
+  }
+
+  void _updateScrollDownVisibility() {
+    if (!_scrollController.hasClients) return;
+
+    final show = !_isSearching && _scrollController.position.extentAfter > 120;
+    if (show != _showScrollDown && mounted) {
+      setState(() => _showScrollDown = show);
     }
   }
 
@@ -100,26 +220,66 @@ class _ChatScreenState extends State<ChatScreen> {
 
   String? _highlightedId;
 
+  void _onQuoteTap(String quotedId) {
+    final index = _messages.indexWhere((m) => m.id == quotedId);
+    if (index != -1) {
+      final requiredLimit = _messages.length - index;
+      if (_messagesLimit < requiredLimit) {
+        setState(() {
+          _messagesLimit = requiredLimit;
+        });
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_scrollToMessage(quotedId));
+      });
+    }
+  }
+
+  void _onSearchResultTap(ChatMessage msg) {
+    setState(() {
+      _isSearching = false;
+      _searchController.clear();
+      _searchQuery = '';
+
+      final index = _messages.indexOf(msg);
+      if (index != -1) {
+        final requiredLimit = _messages.length - index;
+        if (_messagesLimit < requiredLimit) {
+          _messagesLimit = requiredLimit;
+        }
+      }
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_scrollToMessage(msg.id));
+    });
+  }
+
   void _sendMessage() {
     final text = _inputController.text.trim();
     if (text.isEmpty) return;
+    final receiverId = _receiverId;
+    if (receiverId == null || receiverId.isEmpty) return;
 
-    final msg = ChatMessage(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      text: text,
-      isMine: true,
-      time: _formatNow(),
-      status: MessageStatus.sending,
+    _realtimeService.sendMessage(
+      chatId: _chatId,
+      receiverId: receiverId,
+      content: text,
       replyTo: _replyingTo,
     );
-    _messageKeys[msg.id] = GlobalKey();
-
-    setState(() {
-      _messages.add(msg);
-      _replyingTo = null;
-    });
+    setState(() => _replyingTo = null);
     _inputController.clear();
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom(animated: true));
+  }
+
+  void _sendTyping(bool isTyping) {
+    final receiverId = _receiverId;
+    if (receiverId == null || receiverId.isEmpty) return;
+    _realtimeService.sendTyping(
+      chatId: _chatId,
+      receiverId: receiverId,
+      isTyping: isTyping,
+    );
   }
 
   void _addReaction(ChatMessage msg, String emoji) {
@@ -141,33 +301,30 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  String _formatNow() {
-    final now = DateTime.now();
-    final h = now.hour % 12 == 0 ? 12 : now.hour % 12;
-    final m = now.minute.toString().padLeft(2, '0');
-    final ampm = now.hour < 12 ? 'AM' : 'PM';
-    return '$h:$m $ampm';
-  }
-
   @override
   Widget build(BuildContext context) {
     final colors = AppColors(context);
-    return Scaffold(
-      backgroundColor: colors.background,
-      appBar: _buildAppBar(colors),
-      body: Column(
-        children: [
-          Expanded(
-            child: Stack(
-              children: [
-                _buildMessageList(colors),
-                if (_showScrollDown) _buildScrollDownButton(colors),
-              ],
+    return GestureDetector(
+      onTap: () {
+        FocusScope.of(context).requestFocus(FocusNode());
+      },
+      child: Scaffold(
+        backgroundColor: colors.background,
+        appBar: _buildAppBar(colors),
+        body: Column(
+          children: [
+            Expanded(
+              child: Stack(
+                children: [
+                  _buildMessageList(colors),
+                  if (_showScrollDown) _buildScrollDownButton(colors),
+                ],
+              ),
             ),
-          ),
-          if (_replyingTo != null) _buildReplyBanner(colors),
-          _buildInputBar(colors),
-        ],
+            if (_replyingTo != null) _buildReplyBanner(colors),
+            _buildInputBar(colors),
+          ],
+        ),
       ),
     );
   }
@@ -175,6 +332,45 @@ class _ChatScreenState extends State<ChatScreen> {
   // ── App Bar ──────────────────────────────────
 
   PreferredSizeWidget _buildAppBar(AppColors colors) {
+    if (_isSearching) {
+      return AppBar(
+        backgroundColor: colors.surface,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        titleSpacing: 0,
+        leading: IconButton(
+          icon: Icon(Icons.arrow_back_rounded, color: colors.textPrimary, size: 22.sp),
+          onPressed: () {
+            setState(() {
+              _isSearching = false;
+              _searchController.clear();
+              _searchQuery = '';
+            });
+          },
+        ),
+        title: TextField(
+          controller: _searchController,
+          autofocus: true,
+          style: AppTextStyles.w500.copyWith(fontSize: 16.sp, color: colors.textPrimary),
+          decoration: InputDecoration(
+            hintText: 'Search messages...',
+            hintStyle: AppTextStyles.w400.copyWith(fontSize: 15.sp, color: colors.textTertiary),
+            border: InputBorder.none,
+            filled: true,
+            fillColor: colors.background,
+          ),
+        ),
+        actions: [
+          if (_searchQuery.isNotEmpty)
+            IconButton(
+              icon: Icon(Icons.close_rounded, color: colors.textPrimary, size: 20.sp),
+              onPressed: _searchController.clear,
+            ),
+          SizedBox(width: 8.w),
+        ],
+      );
+    }
+
     return AppBar(
       backgroundColor: colors.surface,
       elevation: 0,
@@ -203,10 +399,10 @@ class _ChatScreenState extends State<ChatScreen> {
                   style: AppTextStyles.w600.copyWith(fontSize: 16.sp, color: colors.textPrimary),
                 ),
                 Text(
-                  widget.isOnline ? 'Online' : 'Last seen recently',
+                  _remoteTyping ? 'Typing...' : (widget.isOnline ? 'Online' : 'Last seen recently'),
                   style: AppTextStyles.w400.copyWith(
                     fontSize: 12.sp,
-                    color: widget.isOnline ? colors.success : colors.textTertiary,
+                    color: _remoteTyping || widget.isOnline ? colors.success : colors.textTertiary,
                   ),
                 ),
               ],
@@ -215,6 +411,10 @@ class _ChatScreenState extends State<ChatScreen> {
         ],
       ),
       actions: [
+        IconButton(
+          icon: Icon(Icons.search_rounded, color: colors.textPrimary, size: 22.sp),
+          onPressed: () => setState(() => _isSearching = true),
+        ),
         IconButton(
           icon: Icon(Icons.videocam_outlined, color: colors.textPrimary, size: 22.sp),
           onPressed: () {},
@@ -228,6 +428,11 @@ class _ChatScreenState extends State<ChatScreen> {
           color: colors.card,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16.r)),
           elevation: 8,
+          onSelected: (value) {
+            if (value == 'Search') {
+              setState(() => _isSearching = true);
+            }
+          },
           itemBuilder: (_) => [
             _popupItem(colors, Icons.search_rounded, 'Search'),
             _popupItem(colors, Icons.wallpaper_outlined, 'Wallpaper'),
@@ -258,27 +463,43 @@ class _ChatScreenState extends State<ChatScreen> {
   // ── Message List ─────────────────────────────
 
   Widget _buildMessageList(AppColors colors) {
+    final displayMessages = _filteredMessages;
     return ListView.builder(
       controller: _scrollController,
       padding: EdgeInsets.symmetric(horizontal: 12.w, vertical: 8.h),
-      itemCount: _messages.length,
+      itemCount: displayMessages.length,
       itemBuilder: (context, i) {
-        final msg = _messages[i];
-        final prev = i > 0 ? _messages[i - 1] : null;
+        final msg = displayMessages[i];
+        final prev = i > 0 ? displayMessages[i - 1] : null;
         final showDate = prev == null || prev.time.substring(3) != msg.time.substring(3);
+
+        Widget tile = SwipeableMessage(
+          key: _messageKeys[msg.id],
+          message: msg,
+          colors: colors,
+          isHighlighted: _highlightedId == msg.id,
+          onSwipe: () => setState(() => _replyingTo = msg),
+          onReplyTap: () {
+            if (msg.replyTo != null) {
+              _onQuoteTap(msg.replyTo!.id);
+            }
+          },
+          onReact: (emoji) => _addReaction(msg, emoji),
+          onLongPress: () => _showMessageOptions(msg, colors),
+        );
+
+        if (_isSearching && _searchQuery.isNotEmpty) {
+          tile = GestureDetector(
+            onTap: () => _onSearchResultTap(msg),
+            behavior: HitTestBehavior.opaque,
+            child: tile,
+          );
+        }
+
         return Column(
           children: [
             if (showDate && i == 0) DateChip(label: 'Today', colors: colors),
-            SwipeableMessage(
-              key: _messageKeys[msg.id],
-              message: msg,
-              colors: colors,
-              isHighlighted: _highlightedId == msg.id,
-              onSwipe: () => setState(() => _replyingTo = msg),
-              onReplyTap: () => _scrollToMessage(msg.replyTo!.id),
-              onReact: (emoji) => _addReaction(msg, emoji),
-              onLongPress: () => _showMessageOptions(msg, colors),
-            ),
+            tile,
           ],
         );
       },
@@ -352,21 +573,13 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _buildInputBar(AppColors colors) {
     final isFocused = _inputFocus.hasFocus;
-    final composerColor = colors.isDarkMode ? colors.card : colors.surface;
-    final borderColor = isFocused ? colors.primary : colors.border.withValues(alpha: colors.isDarkMode ? 0.7 : 0.9);
+    final fillColor = colors.isDarkMode ? colors.card : colors.surface;
     final actionColor = isFocused || _isTyping ? colors.primary : colors.textTertiary;
 
     return Container(
       decoration: BoxDecoration(
-        color: colors.surface,
-        border: Border(top: BorderSide(color: colors.border, width: 0.5)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: colors.isDarkMode ? 0.18 : 0.05),
-            blurRadius: 16,
-            offset: const Offset(0, -4),
-          ),
-        ],
+        color: colors.background,
+        border: Border(top: BorderSide(color: colors.border, width: 0.6)),
       ),
       padding: EdgeInsets.only(
         left: 12.w,
@@ -377,13 +590,6 @@ class _ChatScreenState extends State<ChatScreen> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          IconButton(
-            icon: Icon(Icons.emoji_emotions_outlined, color: actionColor, size: 24.sp),
-            onPressed: () {},
-            padding: EdgeInsets.zero,
-            constraints: BoxConstraints(minWidth: 36.w, minHeight: 36.h),
-          ),
-          SizedBox(width: 4.w),
           Expanded(
             child: ConstrainedBox(
               constraints: BoxConstraints(maxHeight: 120.h),
@@ -391,34 +597,59 @@ class _ChatScreenState extends State<ChatScreen> {
                 duration: const Duration(milliseconds: 180),
                 curve: Curves.easeOut,
                 decoration: BoxDecoration(
-                  color: composerColor,
+                  color: fillColor,
                   borderRadius: BorderRadius.circular(24.r),
-                  border: Border.all(color: borderColor, width: isFocused ? 1.4 : 1),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: colors.isDarkMode ? 0.22 : 0.06),
-                      blurRadius: isFocused ? 14 : 8,
-                      offset: const Offset(0, 3),
-                    ),
-                    if (isFocused)
-                      BoxShadow(
-                        color: colors.primary.withValues(alpha: colors.isDarkMode ? 0.18 : 0.12),
-                        blurRadius: 16,
-                        spreadRadius: 1,
-                      ),
-                  ],
+                  border: Border.all(
+                    color: isFocused ? colors.primary : Colors.transparent,
+                    width: 1.4,
+                  ),
+                  boxShadow: isFocused
+                      ? [
+                          BoxShadow(
+                            color: colors.primary.withValues(alpha: colors.isDarkMode ? 0.22 : 0.14),
+                            blurRadius: 14,
+                            spreadRadius: 0.5,
+                          ),
+                        ]
+                      : [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: colors.isDarkMode ? 0.28 : 0.04),
+                            blurRadius: 6,
+                            offset: const Offset(0, 1),
+                          ),
+                        ],
                 ),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
+                    Padding(
+                      padding: EdgeInsets.only(left: 4.w, bottom: 3.h),
+                      child: IconButton(
+                        icon: Icon(Icons.emoji_emotions_outlined, color: actionColor, size: 23.sp),
+                        onPressed: () {},
+                        padding: EdgeInsets.zero,
+                        constraints: BoxConstraints(minWidth: 34.w, minHeight: 34.h),
+                      ),
+                    ),
                     Expanded(
                       child: TextField(
                         controller: _inputController,
                         focusNode: _inputFocus,
                         maxLines: null,
                         minLines: 1,
+                        keyboardType: TextInputType.multiline,
+                        textCapitalization: TextCapitalization.sentences,
                         textInputAction: TextInputAction.newline,
+                        enableInlinePrediction: true,
+                        enableInteractiveSelection: true,
                         style: AppTextStyles.w400.copyWith(fontSize: 15.sp, color: colors.textPrimary),
+                        contextMenuBuilder: (context, editableTextState) {
+                          return _ChatTextSelectionMenu(
+                            editableTextState: editableTextState,
+                            colors: colors,
+                            controller: _inputController,
+                          );
+                        },
                         decoration: InputDecoration(
                           hintText: 'Message',
                           hintStyle: AppTextStyles.w400.copyWith(fontSize: 15.sp, color: colors.textTertiary),
@@ -426,7 +657,9 @@ class _ChatScreenState extends State<ChatScreen> {
                           border: InputBorder.none,
                           enabledBorder: InputBorder.none,
                           focusedBorder: InputBorder.none,
-                          contentPadding: EdgeInsets.fromLTRB(16.w, 11.h, 8.w, 11.h),
+                          contentPadding: EdgeInsets.fromLTRB(4.w, 11.h, 8.w, 11.h),
+                          filled: true,
+                          fillColor: colors.background,
                         ),
                       ),
                     ),
@@ -489,6 +722,72 @@ class _ChatScreenState extends State<ChatScreen> {
           _addReaction(msg, emoji);
         },
       ),
+    );
+  }
+}
+
+/// Drop-in replacement for [TextField]'s default selection toolbar.
+/// Keeps the platform's native Cut / Copy / Paste / Select all buttons
+/// and appends Bold / Italic / Strikethrough / Mono — each one wraps the
+/// current selection with the matching WhatsApp-style delimiter and then
+/// dismisses the menu, the same way a real cut/copy action would.
+class _ChatTextSelectionMenu extends StatelessWidget {
+  const _ChatTextSelectionMenu({
+    required this.editableTextState,
+    required this.colors,
+    required this.controller,
+  });
+
+  final EditableTextState editableTextState;
+  final AppColors colors;
+  final TextEditingController controller;
+
+  static const _formats = <(String label, String marker, bool multiline)>[
+    ('Bold', '*', false),
+    ('Italic', '_', false),
+    ('Strikethrough', '~', false),
+    ('Mono', '`', false),
+    ('Code block', '```', true),
+  ];
+
+  void _wrap(String marker, {bool multiline = false}) {
+    final text = controller.text;
+    final selection = controller.selection;
+
+    if (!selection.isValid || selection.isCollapsed) {
+      editableTextState.hideToolbar();
+      return;
+    }
+
+    final start = selection.start;
+    final end = selection.end;
+    final selectedText = text.substring(start, end);
+    final useNewlines = multiline && selectedText.contains('\n');
+    final wrapped = useNewlines ? '$marker\n$selectedText\n$marker' : '$marker$selectedText$marker';
+
+    final newText = text.replaceRange(start, end, wrapped);
+    controller.value = controller.value.copyWith(
+      text: newText,
+      selection: TextSelection.collapsed(offset: start + wrapped.length),
+    );
+    editableTextState.hideToolbar();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final defaultItems = editableTextState.contextMenuButtonItems;
+
+    final formatItems = [
+      for (final format in _formats)
+        ContextMenuButtonItem(
+          label: format.$1,
+          onPressed: () => _wrap(format.$2, multiline: format.$3),
+        ),
+    ];
+
+    return AdaptiveTextSelectionToolbar.buttonItems(
+      anchors: editableTextState.contextMenuAnchors,
+      buttonItems: [...defaultItems, ...formatItems],
     );
   }
 }

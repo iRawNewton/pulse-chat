@@ -19,11 +19,18 @@ import 'package:pulse_chat/features/authentication/bloc/auth_bloc.dart'
     as _i290;
 import 'package:pulse_chat/features/authentication/data/auth_repository.dart'
     as _i1;
+import 'package:pulse_chat/features/chats/data/chat_realtime_service.dart'
+    as _i500;
 import 'package:pulse_chat/features/contacts/bloc/contacts_bloc.dart' as _i979;
 import 'package:pulse_chat/features/contacts/bloc/search_users_bloc.dart'
     as _i182;
 import 'package:pulse_chat/features/contacts/data/contacts_repository.dart'
     as _i207;
+import 'package:pulse_chat/features/home/data/chat_list_repository.dart'
+    as _i640;
+import 'package:pulse_chat/features/profile/bloc/profile_bloc.dart' as _i927;
+import 'package:pulse_chat/features/profile/data/profile_repository.dart'
+    as _i1025;
 
 extension GetItInjectableX on _i174.GetIt {
   // initializes the registration of main-scope dependencies inside of GetIt
@@ -36,14 +43,29 @@ extension GetItInjectableX on _i174.GetIt {
     gh.singleton<_i208.PrefsStore>(() => _i208.PrefsStore());
     gh.lazySingleton<_i361.Dio>(() => networkModule.dio);
     gh.lazySingleton<_i1.AuthRepository>(() => _i1.AuthRepository());
+    gh.lazySingleton<_i500.ChatRealtimeService>(
+      () => _i500.ChatRealtimeService(),
+    );
     gh.factory<_i674.SettingsCubit>(
       () => _i674.SettingsCubit(gh<_i208.PrefsStore>()),
     );
     gh.lazySingleton<_i207.ContactsRepository>(
       () => _i207.ContactsRepository(gh<_i361.Dio>()),
     );
+    gh.lazySingleton<_i640.ChatListRepository>(
+      () => _i640.ChatListRepository(gh<_i207.ContactsRepository>()),
+    );
+    gh.lazySingleton<_i1025.ProfileRepository>(
+      () => _i1025.ProfileRepository(gh<_i361.Dio>()),
+    );
     gh.factory<_i290.AuthBloc>(() => _i290.AuthBloc(gh<_i1.AuthRepository>()));
-    gh.factory<_i979.ContactsBloc>(
+    gh.factory<_i927.ProfileBloc>(
+      () => _i927.ProfileBloc(
+        gh<_i1025.ProfileRepository>(),
+        gh<_i207.ContactsRepository>(),
+      ),
+    );
+    gh.lazySingleton<_i979.ContactsBloc>(
       () => _i979.ContactsBloc(gh<_i207.ContactsRepository>()),
     );
     gh.factory<_i182.SearchUsersBloc>(

@@ -8,4 +8,5 @@ class AppRoutes {
   static const chatScreen = '/chat-page';
   static const contacts = '/contacts';
   static const searchUsers = '/contacts/search';
+  static const profile = '/profile/:uid';
 }

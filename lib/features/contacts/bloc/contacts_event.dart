@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:pulse_chat/features/contacts/data/contact_list_type.dart';
 import 'package:pulse_chat/features/contacts/data/contact_status.dart';
 
 @immutable
@@ -7,7 +8,15 @@ abstract class ContactsEvent {
 }
 
 class FetchContactsEvent extends ContactsEvent {
-  const FetchContactsEvent();
+  const FetchContactsEvent({this.forceRefresh = false});
+
+  final bool forceRefresh;
+}
+
+class LoadMoreContactsEvent extends ContactsEvent {
+  const LoadMoreContactsEvent(this.type);
+
+  final ContactListType type;
 }
 
 class AcceptContactRequestEvent extends ContactsEvent {

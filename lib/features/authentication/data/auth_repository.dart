@@ -18,6 +18,16 @@ class AuthRepository {
   /// Get current user
   User? get currentUser => _auth.currentUser;
 
+  Future<User?> getInitialUser() async {
+    final user = _auth.currentUser;
+    if (user != null) return user;
+
+    return _auth.authStateChanges().first.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () => _auth.currentUser,
+    );
+  }
+
   /// Email Sign-up
   Future<UserCredential> signUpWithEmail({
     required String name,

@@ -29,11 +29,6 @@ class SearchUsersBloc extends Bloc<SearchUsersEvent, SearchUsersState> {
 
     emit(const SearchLoading());
     try {
-      // 1. Fetch contacts first to merge relationship statuses
-      final contacts = await _contactsRepository.getContacts();
-      final contactsMap = {for (final c in contacts) c.uid: c.status};
-
-      // 2. Perform search
       final results = await _contactsRepository.searchUsers(query);
 
       if (results.isEmpty) {
@@ -41,13 +36,7 @@ class SearchUsersBloc extends Bloc<SearchUsersEvent, SearchUsersState> {
         return;
       }
 
-      // 3. Merge status
-      final mergedResults = results.map((user) {
-        final status = contactsMap[user.uid] ?? ContactStatus.none;
-        return user.copyWith(status: status);
-      }).toList();
-
-      emit(SearchSuccess(mergedResults));
+      emit(SearchSuccess(results));
     } on Exception catch (e) {
       emit(SearchFailure(e.toString().replaceAll('Exception: ', '')));
     }

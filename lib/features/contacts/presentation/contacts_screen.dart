@@ -4,20 +4,23 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pulse_chat/config/routes/app_routes.dart';
+import 'package:pulse_chat/core/di/injection.dart';
 import 'package:pulse_chat/core/theme/app_colors.dart';
 import 'package:pulse_chat/core/theme/app_text_style.dart';
+import 'package:pulse_chat/features/chats/data/chat_realtime_service.dart';
 import 'package:pulse_chat/features/authentication/widgets/auth_background.dart';
 import 'package:pulse_chat/features/contacts/bloc/contacts_bloc.dart';
 import 'package:pulse_chat/features/contacts/bloc/contacts_event.dart';
 import 'package:pulse_chat/features/contacts/bloc/contacts_state.dart';
+import 'package:pulse_chat/features/contacts/data/contact_list_type.dart';
 import 'package:pulse_chat/features/contacts/data/contact_status.dart';
 import 'package:pulse_chat/features/contacts/widgets/contact_user_tile.dart';
 import 'package:pulse_chat/features/contacts/widgets/pulse_empty_state.dart';
 
 /// Hub screen combining:
-/// - GET /users/contacts          -> "Contacts" tab
-/// - incoming pending records     -> "Requests" tab (accept/reject buttons)
-/// - outgoing pending records     -> "Sent" tab (cancel button)
+/// - GET /users/contacts?status=accepted -> "Contacts" tab
+/// - GET /users/contacts?status=pending  -> "Requests" tab
+/// - GET /users/contacts?status=sent     -> "Sent" tab
 class ContactsScreen extends StatefulWidget {
   const ContactsScreen({super.key});
 
@@ -27,17 +30,39 @@ class ContactsScreen extends StatefulWidget {
 
 class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProviderStateMixin {
   late final TabController _tabController;
+  late final ChatRealtimeService _realtimeService;
+  StreamSubscription<RealtimeEvent>? _realtimeSubscription;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
+    _realtimeService = getIt<ChatRealtimeService>();
+    unawaited(_realtimeService.connect());
+    _realtimeSubscription = _realtimeService.events.listen((event) {
+      if (!mounted) return;
+      if (event.name == 'contact_request' || event.name == 'contact_accept' || event.name == 'contact_reject') {
+        context.read<ContactsBloc>().add(const FetchContactsEvent(forceRefresh: true));
+      }
+    });
   }
 
   @override
   void dispose() {
+    _realtimeSubscription?.cancel();
     _tabController.dispose();
     super.dispose();
+  }
+
+  Future<void> _refreshContacts() async {
+    final bloc = context.read<ContactsBloc>()..add(const FetchContactsEvent(forceRefresh: true));
+    try {
+      await bloc.stream
+          .firstWhere((state) => state is! ContactsLoaded || !state.isRefreshing)
+          .timeout(const Duration(seconds: 20));
+    } on TimeoutException {
+      // Keep the refresh gesture from hanging if the request never completes.
+    }
   }
 
   @override
@@ -57,7 +82,7 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
           IconButton(
             icon: Icon(Icons.person_add_alt_1_rounded, color: colors.primary, size: 22.sp),
             onPressed: () async {
-              // Push search and wait; when we return, refresh contacts list
+              // Push search and wait; when we return, keep any loaded contacts visible.
               await context.push(AppRoutes.searchUsers);
               if (context.mounted) {
                 context.read<ContactsBloc>().add(const FetchContactsEvent());
@@ -121,9 +146,9 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
                   _PulseTabBar(
                     controller: _tabController,
                     tabs: [
-                      _TabSpec(label: 'Contacts', count: contacts.where((u) => u.status != ContactStatus.blockedByMe).length),
-                      _TabSpec(label: 'Requests', count: incoming.length, highlight: incoming.isNotEmpty),
-                      _TabSpec(label: 'Sent', count: sent.length),
+                      _TabSpec(label: 'Contacts', count: state.contactsTotal),
+                      _TabSpec(label: 'Requests', count: state.incomingTotal, highlight: state.incomingTotal > 0),
+                      _TabSpec(label: 'Sent', count: state.sentTotal),
                     ],
                   ),
                   Expanded(
@@ -132,16 +157,28 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
                       children: [
                         _ContactsTab(
                           contacts: contacts,
+                          hasMore: state.contactsHasMore,
+                          isLoadingMore: state.isLoadingMoreContacts,
+                          onRefresh: _refreshContacts,
+                          onLoadMore: () => context.read<ContactsBloc>().add(const LoadMoreContactsEvent(ContactListType.contacts)),
                           onBlock: (user) => context.read<ContactsBloc>().add(BlockUserEvent(user)),
                           onUnblock: (user) => context.read<ContactsBloc>().add(UnblockUserEvent(user)),
                         ),
                         _RequestsTab(
                           requests: incoming,
+                          hasMore: state.incomingHasMore,
+                          isLoadingMore: state.isLoadingMoreIncoming,
+                          onRefresh: _refreshContacts,
+                          onLoadMore: () => context.read<ContactsBloc>().add(const LoadMoreContactsEvent(ContactListType.incoming)),
                           onAccept: (user) => context.read<ContactsBloc>().add(AcceptContactRequestEvent(user)),
                           onReject: (user) => context.read<ContactsBloc>().add(RejectContactRequestEvent(user)),
                         ),
                         _SentTab(
                           sent: sent,
+                          hasMore: state.sentHasMore,
+                          isLoadingMore: state.isLoadingMoreSent,
+                          onRefresh: _refreshContacts,
+                          onLoadMore: () => context.read<ContactsBloc>().add(const LoadMoreContactsEvent(ContactListType.sent)),
                           onCancel: (user) => context.read<ContactsBloc>().add(CancelContactRequestEvent(user)),
                         ),
                       ],
@@ -264,37 +301,72 @@ class _PulseTabBar extends StatelessWidget {
 }
 
 class _ContactsTab extends StatelessWidget {
-  const _ContactsTab({required this.contacts, required this.onBlock, required this.onUnblock});
+  const _ContactsTab({
+    required this.contacts,
+    required this.hasMore,
+    required this.isLoadingMore,
+    required this.onRefresh,
+    required this.onLoadMore,
+    required this.onBlock,
+    required this.onUnblock,
+  });
 
   final List<ContactUser> contacts;
+  final bool hasMore;
+  final bool isLoadingMore;
+  final Future<void> Function() onRefresh;
+  final VoidCallback onLoadMore;
   final ValueChanged<ContactUser> onBlock;
   final ValueChanged<ContactUser> onUnblock;
 
   @override
   Widget build(BuildContext context) {
     if (contacts.isEmpty) {
-      return const Center(
-        child: PulseEmptyState(
-          icon: Icons.people_outline_rounded,
-          title: 'No contacts yet',
-          message: 'Search for people you know and send\nthem a request to start chatting.',
+      return RefreshIndicator(
+        onRefresh: onRefresh,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: [
+            SizedBox(
+              height: MediaQuery.sizeOf(context).height * 0.55,
+              child: const Center(
+                child: PulseEmptyState(
+                  icon: Icons.people_outline_rounded,
+                  title: 'No contacts yet',
+                  message: 'Search for people you know and send\nthem a request to start chatting.',
+                ),
+              ),
+            ),
+          ],
         ),
       );
     }
-    return ListView.builder(
-      padding: EdgeInsets.symmetric(vertical: 8.h),
-      itemCount: contacts.length,
-      itemBuilder: (context, i) {
-        final user = contacts[i];
-        return ContactUserTile(
-          user: user,
-          onMessage: () {
-            // Can navigate to chat or perform other actions in future
+    return RefreshIndicator(
+      onRefresh: onRefresh,
+      child: _PagedListNotification(
+        hasMore: hasMore,
+        isLoadingMore: isLoadingMore,
+        onLoadMore: onLoadMore,
+        child: ListView.builder(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: EdgeInsets.symmetric(vertical: 8.h),
+          itemCount: contacts.length + (isLoadingMore ? 1 : 0),
+          itemBuilder: (context, i) {
+            if (i >= contacts.length) return const _LoadMoreIndicator();
+
+            final user = contacts[i];
+            return ContactUserTile(
+              user: user,
+              onTap: () => context.push('/profile/${user.uid}'),
+              onMessage: () {
+                // Can navigate to chat or perform other actions in future
+              },
+              onUnblock: () => onUnblock(user),
+              onLongPress: user.status == ContactStatus.friends ? () => _showBlockSheet(context, user, onBlock) : null,
+            );
           },
-          onUnblock: () => onUnblock(user),
-          onLongPress: user.status == ContactStatus.friends ? () => _showBlockSheet(context, user, onBlock) : null,
-        );
-      },
+        ),
+      ),
     );
   }
 
@@ -342,65 +414,183 @@ class _ContactsTab extends StatelessWidget {
 }
 
 class _RequestsTab extends StatelessWidget {
-  const _RequestsTab({required this.requests, required this.onAccept, required this.onReject});
+  const _RequestsTab({
+    required this.requests,
+    required this.hasMore,
+    required this.isLoadingMore,
+    required this.onRefresh,
+    required this.onLoadMore,
+    required this.onAccept,
+    required this.onReject,
+  });
 
   final List<ContactUser> requests;
+  final bool hasMore;
+  final bool isLoadingMore;
+  final Future<void> Function() onRefresh;
+  final VoidCallback onLoadMore;
   final ValueChanged<ContactUser> onAccept;
   final ValueChanged<ContactUser> onReject;
 
   @override
   Widget build(BuildContext context) {
     if (requests.isEmpty) {
-      return const Center(
-        child: PulseEmptyState(
-          icon: Icons.mark_email_read_outlined,
-          title: 'No pending requests',
-          message: "When someone wants to connect with\nyou, it'll show up here.",
+      return RefreshIndicator(
+        onRefresh: onRefresh,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: [
+            SizedBox(
+              height: MediaQuery.sizeOf(context).height * 0.55,
+              child: const Center(
+                child: PulseEmptyState(
+                  icon: Icons.mark_email_read_outlined,
+                  title: 'No pending requests',
+                  message: "When someone wants to connect with\nyou, it'll show up here.",
+                ),
+              ),
+            ),
+          ],
         ),
       );
     }
-    return ListView.builder(
-      padding: EdgeInsets.symmetric(vertical: 8.h),
-      itemCount: requests.length,
-      itemBuilder: (context, i) {
-        final user = requests[i];
-        return ContactUserTile(
-          user: user,
-          onAccept: () => onAccept(user),
-          onReject: () => onReject(user),
-        );
-      },
+    return RefreshIndicator(
+      onRefresh: onRefresh,
+      child: _PagedListNotification(
+        hasMore: hasMore,
+        isLoadingMore: isLoadingMore,
+        onLoadMore: onLoadMore,
+        child: ListView.builder(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: EdgeInsets.symmetric(vertical: 8.h),
+          itemCount: requests.length + (isLoadingMore ? 1 : 0),
+          itemBuilder: (context, i) {
+            if (i >= requests.length) return const _LoadMoreIndicator();
+
+            final user = requests[i];
+            return ContactUserTile(
+              user: user,
+              onTap: () => context.push('/profile/${user.uid}'),
+              onAccept: () => onAccept(user),
+              onReject: () => onReject(user),
+            );
+          },
+        ),
+      ),
     );
   }
 }
 
 class _SentTab extends StatelessWidget {
-  const _SentTab({required this.sent, required this.onCancel});
+  const _SentTab({
+    required this.sent,
+    required this.hasMore,
+    required this.isLoadingMore,
+    required this.onRefresh,
+    required this.onLoadMore,
+    required this.onCancel,
+  });
 
   final List<ContactUser> sent;
+  final bool hasMore;
+  final bool isLoadingMore;
+  final Future<void> Function() onRefresh;
+  final VoidCallback onLoadMore;
   final ValueChanged<ContactUser> onCancel;
 
   @override
   Widget build(BuildContext context) {
     if (sent.isEmpty) {
-      return const Center(
-        child: PulseEmptyState(
-          icon: Icons.outgoing_mail,
-          title: 'No sent requests',
-          message: 'Requests you send to other people\nwill be listed here until they respond.',
+      return RefreshIndicator(
+        onRefresh: onRefresh,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: [
+            SizedBox(
+              height: MediaQuery.sizeOf(context).height * 0.55,
+              child: const Center(
+                child: PulseEmptyState(
+                  icon: Icons.outgoing_mail,
+                  title: 'No sent requests',
+                  message: 'Requests you send to other people\nwill be listed here until they respond.',
+                ),
+              ),
+            ),
+          ],
         ),
       );
     }
-    return ListView.builder(
-      padding: EdgeInsets.symmetric(vertical: 8.h),
-      itemCount: sent.length,
-      itemBuilder: (context, i) {
-        final user = sent[i];
-        return ContactUserTile(
-          user: user,
-          onCancelRequest: () => onCancel(user),
-        );
+    return RefreshIndicator(
+      onRefresh: onRefresh,
+      child: _PagedListNotification(
+        hasMore: hasMore,
+        isLoadingMore: isLoadingMore,
+        onLoadMore: onLoadMore,
+        child: ListView.builder(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: EdgeInsets.symmetric(vertical: 8.h),
+          itemCount: sent.length + (isLoadingMore ? 1 : 0),
+          itemBuilder: (context, i) {
+            if (i >= sent.length) return const _LoadMoreIndicator();
+
+            final user = sent[i];
+            return ContactUserTile(
+              user: user,
+              onTap: () => context.push('/profile/${user.uid}'),
+              onCancelRequest: () => onCancel(user),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _PagedListNotification extends StatelessWidget {
+  const _PagedListNotification({
+    required this.hasMore,
+    required this.isLoadingMore,
+    required this.onLoadMore,
+    required this.child,
+  });
+
+  final bool hasMore;
+  final bool isLoadingMore;
+  final VoidCallback onLoadMore;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return NotificationListener<ScrollNotification>(
+      onNotification: (notification) {
+        if (notification.metrics.extentAfter < 240 && hasMore && !isLoadingMore) {
+          onLoadMore();
+        }
+        return false;
       },
+      child: child,
+    );
+  }
+}
+
+class _LoadMoreIndicator extends StatelessWidget {
+  const _LoadMoreIndicator();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColors(context);
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: 16.h),
+      child: Center(
+        child: SizedBox(
+          width: 22.r,
+          height: 22.r,
+          child: CircularProgressIndicator(
+            strokeWidth: 2.4,
+            valueColor: AlwaysStoppedAnimation<Color>(colors.primary),
+          ),
+        ),
+      ),
     );
   }
 }

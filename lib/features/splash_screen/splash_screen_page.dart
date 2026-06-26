@@ -40,12 +40,26 @@ class _SplashScreenPageState extends State<SplashScreenPage> with SingleTickerPr
   }
 
   Future<void> _openLoginAfterDelay() async {
-    await Future<void>.delayed(const Duration(seconds: 2));
+    await Future.wait([
+      Future<void>.delayed(const Duration(seconds: 2)),
+      _waitForAuthCheck(),
+    ]);
     if (!mounted) return;
 
     final authState = context.read<AuthBloc>().state;
     context.go(
       authState is Authenticated ? AppRoutes.home : AppRoutes.login,
+    );
+  }
+
+  Future<void> _waitForAuthCheck() async {
+    final currentState = context.read<AuthBloc>().state;
+    if (currentState is Authenticated || currentState is Unauthenticated || currentState is AuthFailure) {
+      return;
+    }
+
+    await context.read<AuthBloc>().stream.firstWhere(
+      (state) => state is Authenticated || state is Unauthenticated || state is AuthFailure,
     );
   }
 

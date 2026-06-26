@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
+import 'package:go_router/go_router.dart';
 import 'package:pulse_chat/core/theme/app_colors.dart';
 import 'package:pulse_chat/core/theme/app_text_style.dart';
 import 'package:pulse_chat/features/authentication/widgets/auth_background.dart';
@@ -145,6 +146,7 @@ class _SearchUsersScreenState extends State<SearchUsersScreen> {
                 return ContactUserTile(
                   key: ValueKey(user.uid),
                   user: user,
+                  onTap: () => context.push('/profile/${user.uid}'),
                   onSendRequest: () => context.read<SearchUsersBloc>().add(SendRequest(user)),
                   onCancelRequest: () => context.read<SearchUsersBloc>().add(CancelRequest(user)),
                   onMessage: () {

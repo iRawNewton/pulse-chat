@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:injectable/injectable.dart';
+import 'package:pulse_chat/features/contacts/data/contact_list_type.dart';
 import 'package:pulse_chat/features/contacts/data/contact_status.dart';
 
 @lazySingleton
@@ -8,12 +9,34 @@ class ContactsRepository {
 
   final Dio _dio;
 
-  /// Fetches all contact relationships for the authenticated user
-  Future<List<ContactUser>> getContacts() async {
+  /// Fetches one status-filtered page of contact relationships.
+  Future<ContactsPage> getContactsPage({
+    required ContactListType type,
+    required int limit,
+    required int offset,
+  }) async {
     try {
-      final response = await _dio.get<List<dynamic>>('/api/v1/users/contacts');
-      if (response.data == null) return [];
-      return response.data!.map((item) => _mapToContactUser(item as Map<String, dynamic>)).toList();
+      final response = await _dio.get<Map<String, dynamic>>(
+        '/api/v1/users/contacts',
+        queryParameters: {
+          'status': type.apiStatus,
+          'limit': limit,
+          'offset': offset,
+        },
+      );
+      final data = response.data;
+      if (data == null) {
+        return ContactsPage.empty(limit: limit, offset: offset);
+      }
+
+      final rawItems = data['items'] as List<dynamic>? ?? const [];
+      return ContactsPage(
+        items: rawItems.map((item) => _mapToContactUser(item as Map<String, dynamic>)).toList(),
+        total: data['total'] as int? ?? rawItems.length,
+        limit: data['limit'] as int? ?? limit,
+        offset: data['offset'] as int? ?? offset,
+        hasMore: data['hasMore'] as bool? ?? false,
+      );
     } on DioException catch (e) {
       throw _handleDioError(e);
     }
@@ -27,7 +50,7 @@ class ContactsRepository {
         queryParameters: {'q': query},
       );
       if (response.data == null) return [];
-      return response.data!.map((item) => _mapToContactUser(item as Map<String, dynamic>, forceStatus: ContactStatus.none)).toList();
+      return response.data!.map((item) => _mapToContactUser(item as Map<String, dynamic>)).toList();
     } on DioException catch (e) {
       throw _handleDioError(e);
     }
@@ -160,4 +183,30 @@ class ContactsRepository {
     }
     return Exception(message);
   }
+}
+
+class ContactsPage {
+  const ContactsPage({
+    required this.items,
+    required this.total,
+    required this.limit,
+    required this.offset,
+    required this.hasMore,
+  });
+
+  factory ContactsPage.empty({required int limit, required int offset}) {
+    return ContactsPage(
+      items: const [],
+      total: 0,
+      limit: limit,
+      offset: offset,
+      hasMore: false,
+    );
+  }
+
+  final List<ContactUser> items;
+  final int total;
+  final int limit;
+  final int offset;
+  final bool hasMore;
 }

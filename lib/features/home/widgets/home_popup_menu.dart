@@ -1,12 +1,15 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
+import 'package:go_router/go_router.dart';
 import 'package:pulse_chat/core/database/app_prefs.dart';
 import 'package:pulse_chat/core/database/cubit/settings_cubit.dart';
 import 'package:pulse_chat/core/theme/app_colors.dart';
 import 'package:pulse_chat/core/theme/app_text_style.dart';
 import 'package:pulse_chat/features/authentication/bloc/auth_bloc.dart';
 import 'package:pulse_chat/features/authentication/bloc/auth_event.dart';
+import 'package:pulse_chat/features/authentication/bloc/auth_state.dart';
 import 'package:pulse_chat/features/home/widgets/theme_toggle_menu.dart';
 
 class HomePopupMenu extends StatefulWidget {
@@ -57,7 +60,7 @@ class HomePopupMenuState extends State<HomePopupMenu> {
     final settingsCubit = context.read<SettingsCubit>();
 
     _overlayEntry = OverlayEntry(
-      builder: (context) {
+      builder: (overlayContext) {
         return Stack(
           children: [
             Positioned.fill(
@@ -85,6 +88,18 @@ class HomePopupMenuState extends State<HomePopupMenu> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
+                          _PopupMenuAction(
+                            colors: colors,
+                            icon: Icons.person_outline_rounded,
+                            label: 'My Profile',
+                            onTap: () {
+                              _closeMenu();
+                              final authState = authBloc.state;
+                              if (authState is Authenticated) {
+                                unawaited(context.push('/profile/${authState.user.uid}'));
+                              }
+                            },
+                          ),
                           _PopupMenuAction(
                             colors: colors,
                             icon: Icons.group_add_outlined,
