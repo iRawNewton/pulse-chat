@@ -1,11 +1,15 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pulse_chat/config/routes/app_routes.dart';
 import 'package:pulse_chat/core/theme/app_colors.dart';
 import 'package:pulse_chat/core/theme/app_text_style.dart';
 import 'package:pulse_chat/features/authentication/widgets/auth_background.dart';
+import 'package:pulse_chat/features/contacts/bloc/contacts_bloc.dart';
+import 'package:pulse_chat/features/contacts/bloc/contacts_event.dart';
+import 'package:pulse_chat/features/contacts/bloc/contacts_state.dart';
 import 'package:pulse_chat/features/contacts/data/contact_status.dart';
 import 'package:pulse_chat/features/contacts/widgets/contact_user_tile.dart';
 import 'package:pulse_chat/features/contacts/widgets/pulse_empty_state.dart';
@@ -14,10 +18,6 @@ import 'package:pulse_chat/features/contacts/widgets/pulse_empty_state.dart';
 /// - GET /users/contacts          -> "Contacts" tab
 /// - incoming pending records     -> "Requests" tab (accept/reject buttons)
 /// - outgoing pending records     -> "Sent" tab (cancel button)
-///
-/// Your backend's GET /users/contacts probably returns all three buckets
-/// (or you fetch them as separate calls) — split the response into the
-/// three lists below by status once wired to a ContactsBloc.
 class ContactsScreen extends StatefulWidget {
   const ContactsScreen({super.key});
 
@@ -27,10 +27,6 @@ class ContactsScreen extends StatefulWidget {
 
 class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProviderStateMixin {
   late final TabController _tabController;
-
-  List<ContactUser> _contacts = List.of(_mockContacts);
-  final List<ContactUser> _incoming = List.of(_mockIncoming);
-  final List<ContactUser> _sent = List.of(_mockSent);
 
   @override
   void initState() {
@@ -42,36 +38,6 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
   void dispose() {
     _tabController.dispose();
     super.dispose();
-  }
-
-  void _accept(ContactUser user) {
-    setState(() {
-      _incoming.removeWhere((u) => u.uid == user.uid);
-      _contacts = [user.copyWith(status: ContactStatus.friends), ..._contacts];
-    });
-  }
-
-  void _reject(ContactUser user) {
-    setState(() => _incoming.removeWhere((u) => u.uid == user.uid));
-  }
-
-  void _cancelSent(ContactUser user) {
-    setState(() => _sent.removeWhere((u) => u.uid == user.uid));
-  }
-
-  void _block(ContactUser user) {
-    setState(() {
-      _contacts = _contacts.map((u) => u.uid == user.uid ? u.copyWith(status: ContactStatus.blockedByMe) : u).toList();
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('${user.displayName} has been blocked'), behavior: SnackBarBehavior.floating),
-    );
-  }
-
-  void _unblock(ContactUser user) {
-    setState(() {
-      _contacts = _contacts.map((u) => u.uid == user.uid ? u.copyWith(status: ContactStatus.friends) : u).toList();
-    });
   }
 
   @override
@@ -90,33 +56,103 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
         actions: [
           IconButton(
             icon: Icon(Icons.person_add_alt_1_rounded, color: colors.primary, size: 22.sp),
-            onPressed: () => context.push(AppRoutes.searchUsers),
+            onPressed: () async {
+              // Push search and wait; when we return, refresh contacts list
+              await context.push(AppRoutes.searchUsers);
+              if (context.mounted) {
+                context.read<ContactsBloc>().add(const FetchContactsEvent());
+              }
+            },
           ),
           SizedBox(width: 4.w),
         ],
       ),
       body: AuthBackground(
-        child: Column(
-          children: [
-            _PulseTabBar(
-              controller: _tabController,
-              tabs: [
-                _TabSpec(label: 'Contacts', count: _contacts.where((u) => u.status != ContactStatus.blockedByMe).length),
-                _TabSpec(label: 'Requests', count: _incoming.length, highlight: _incoming.isNotEmpty),
-                _TabSpec(label: 'Sent', count: _sent.length),
-              ],
-            ),
-            Expanded(
-              child: TabBarView(
-                controller: _tabController,
+        child: BlocBuilder<ContactsBloc, ContactsState>(
+          builder: (context, state) {
+            if (state is ContactsLoading) {
+              return Center(
+                child: CircularProgressIndicator(
+                  valueColor: AlwaysStoppedAnimation<Color>(colors.primary),
+                ),
+              );
+            }
+
+            if (state is ContactsFailure) {
+              return Center(
+                child: Padding(
+                  padding: EdgeInsets.all(24.r),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.error_outline_rounded, color: colors.error, size: 48.sp),
+                      SizedBox(height: 16.h),
+                      Text(
+                        state.error,
+                        textAlign: TextAlign.center,
+                        style: AppTextStyles.w500.copyWith(fontSize: 14.sp, color: colors.textPrimary),
+                      ),
+                      SizedBox(height: 20.h),
+                      ElevatedButton(
+                        onPressed: () => context.read<ContactsBloc>().add(const FetchContactsEvent()),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: colors.primary,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12.r)),
+                          padding: EdgeInsets.symmetric(horizontal: 24.w, vertical: 12.h),
+                        ),
+                        child: Text(
+                          'Retry',
+                          style: AppTextStyles.w600.copyWith(fontSize: 14.sp, color: Colors.white),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            if (state is ContactsLoaded) {
+              final contacts = state.contacts;
+              final incoming = state.incoming;
+              final sent = state.sent;
+
+              return Column(
                 children: [
-                  _ContactsTab(contacts: _contacts, onBlock: _block, onUnblock: _unblock),
-                  _RequestsTab(requests: _incoming, onAccept: _accept, onReject: _reject),
-                  _SentTab(sent: _sent, onCancel: _cancelSent),
+                  _PulseTabBar(
+                    controller: _tabController,
+                    tabs: [
+                      _TabSpec(label: 'Contacts', count: contacts.where((u) => u.status != ContactStatus.blockedByMe).length),
+                      _TabSpec(label: 'Requests', count: incoming.length, highlight: incoming.isNotEmpty),
+                      _TabSpec(label: 'Sent', count: sent.length),
+                    ],
+                  ),
+                  Expanded(
+                    child: TabBarView(
+                      controller: _tabController,
+                      children: [
+                        _ContactsTab(
+                          contacts: contacts,
+                          onBlock: (user) => context.read<ContactsBloc>().add(BlockUserEvent(user)),
+                          onUnblock: (user) => context.read<ContactsBloc>().add(UnblockUserEvent(user)),
+                        ),
+                        _RequestsTab(
+                          requests: incoming,
+                          onAccept: (user) => context.read<ContactsBloc>().add(AcceptContactRequestEvent(user)),
+                          onReject: (user) => context.read<ContactsBloc>().add(RejectContactRequestEvent(user)),
+                        ),
+                        _SentTab(
+                          sent: sent,
+                          onCancel: (user) => context.read<ContactsBloc>().add(CancelContactRequestEvent(user)),
+                        ),
+                      ],
+                    ),
+                  ),
                 ],
-              ),
-            ),
-          ],
+              );
+            }
+
+            return const SizedBox.shrink();
+          },
         ),
       ),
     );
@@ -252,7 +288,9 @@ class _ContactsTab extends StatelessWidget {
         final user = contacts[i];
         return ContactUserTile(
           user: user,
-          onMessage: () {},
+          onMessage: () {
+            // Can navigate to chat or perform other actions in future
+          },
           onUnblock: () => onUnblock(user),
           onLongPress: user.status == ContactStatus.friends ? () => _showBlockSheet(context, user, onBlock) : null,
         );
@@ -286,7 +324,7 @@ class _ContactsTab extends StatelessWidget {
                     style: AppTextStyles.w500.copyWith(fontSize: 14.5.sp, color: colors.error),
                   ),
                   subtitle: Text(
-                    'They won\'t be able to message you',
+                    "They won't be able to message you",
                     style: AppTextStyles.w400.copyWith(fontSize: 12.sp, color: colors.textSecondary),
                   ),
                   onTap: () {
@@ -317,7 +355,7 @@ class _RequestsTab extends StatelessWidget {
         child: PulseEmptyState(
           icon: Icons.mark_email_read_outlined,
           title: 'No pending requests',
-          message: 'When someone wants to connect with\nyou, it\'ll show up here.',
+          message: "When someone wants to connect with\nyou, it'll show up here.",
         ),
       );
     }
@@ -366,19 +404,3 @@ class _SentTab extends StatelessWidget {
     );
   }
 }
-
-// ----- Mock data: remove once ContactsBloc is wired in -----
-final _mockContacts = <ContactUser>[
-  const ContactUser(uid: '4', username: 'sneha.codes', displayName: 'Sneha Iyer', status: ContactStatus.friends, isOnline: true),
-  const ContactUser(uid: '6', username: 'aditya.r', displayName: 'Aditya Rao', status: ContactStatus.friends),
-  const ContactUser(uid: '5', username: 'vikram_t', displayName: 'Vikram Thakur', status: ContactStatus.blockedByMe),
-];
-
-final _mockIncoming = <ContactUser>[
-  const ContactUser(uid: '7', username: 'meera.j', displayName: 'Meera Joshi', status: ContactStatus.pendingReceived, mutualContactsCount: 2),
-  const ContactUser(uid: '8', username: 'karan_s', displayName: 'Karan Singh', status: ContactStatus.pendingReceived),
-];
-
-final _mockSent = <ContactUser>[
-  const ContactUser(uid: '2', username: 'priya_dev', displayName: 'Priya Sharma', status: ContactStatus.pendingSent),
-];

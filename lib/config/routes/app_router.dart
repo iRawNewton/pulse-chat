@@ -1,8 +1,13 @@
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pulse_chat/config/routes/app_routes.dart';
+import 'package:pulse_chat/core/di/injection.dart';
 import 'package:pulse_chat/features/authentication/presentation/login_screen.dart';
 import 'package:pulse_chat/features/authentication/presentation/signup_screen.dart';
 import 'package:pulse_chat/features/chats/presentation/chat_screen.dart';
+import 'package:pulse_chat/features/contacts/bloc/contacts_bloc.dart';
+import 'package:pulse_chat/features/contacts/bloc/contacts_event.dart';
+import 'package:pulse_chat/features/contacts/bloc/search_users_bloc.dart';
 import 'package:pulse_chat/features/contacts/presentation/contacts_screen.dart';
 import 'package:pulse_chat/features/contacts/presentation/search_users_screen.dart';
 import 'package:pulse_chat/features/home/data/chat_item_model.dart';
@@ -41,11 +46,17 @@ final appRouter = GoRouter(
     ),
     GoRoute(
       path: AppRoutes.contacts,
-      builder: (context, state) => const ContactsScreen(),
+      builder: (context, state) => BlocProvider(
+        create: (context) => getIt<ContactsBloc>()..add(const FetchContactsEvent()),
+        child: const ContactsScreen(),
+      ),
     ),
     GoRoute(
       path: AppRoutes.searchUsers,
-      builder: (context, state) => const SearchUsersScreen(),
+      builder: (context, state) => BlocProvider(
+        create: (context) => getIt<SearchUsersBloc>(),
+        child: const SearchUsersScreen(),
+      ),
     ),
   ],
 );

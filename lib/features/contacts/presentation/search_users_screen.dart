@@ -1,21 +1,17 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:pulse_chat/core/theme/app_colors.dart';
 import 'package:pulse_chat/core/theme/app_text_style.dart';
 import 'package:pulse_chat/features/authentication/widgets/auth_background.dart';
-import 'package:pulse_chat/features/contacts/data/contact_status.dart';
+import 'package:pulse_chat/features/contacts/bloc/search_users_bloc.dart';
+import 'package:pulse_chat/features/contacts/bloc/search_users_event.dart';
+import 'package:pulse_chat/features/contacts/bloc/search_users_state.dart';
 import 'package:pulse_chat/features/contacts/widgets/contact_user_tile.dart';
 import 'package:pulse_chat/features/contacts/widgets/pulse_empty_state.dart';
 
-/// GET /api/v1/users/search
-///
-/// Wiring notes for later:
-/// - Replace [_mockSearch] with a debounced call into your SearchUsersBloc
-///   (TextEditingController -> Subject/Timer debounce -> emit SearchUsersEvent).
-/// - Map status icon button taps to SendContactRequestEvent / etc. and listen
-///   for the corresponding state to flip that single user's [ContactStatus]
-///   optimistically (this file already structures state per-row for that).
+/// Screen to search users at GET /api/v1/users/search
 class SearchUsersScreen extends StatefulWidget {
   const SearchUsersScreen({super.key});
 
@@ -23,14 +19,10 @@ class SearchUsersScreen extends StatefulWidget {
   State<SearchUsersScreen> createState() => _SearchUsersScreenState();
 }
 
-enum _SearchState { idle, loading, results, empty }
-
 class _SearchUsersScreenState extends State<SearchUsersScreen> {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
   Timer? _debounce;
-  _SearchState _state = _SearchState.idle;
-  List<ContactUser> _results = [];
 
   @override
   void dispose() {
@@ -43,33 +35,13 @@ class _SearchUsersScreenState extends State<SearchUsersScreen> {
   void _onQueryChanged(String query) {
     _debounce?.cancel();
     if (query.trim().isEmpty) {
-      setState(() {
-        _state = _SearchState.idle;
-        _results = [];
-      });
+      context.read<SearchUsersBloc>().add(const SearchQueryChanged(''));
       return;
     }
-    setState(() => _state = _SearchState.loading);
-    _debounce = Timer(const Duration(milliseconds: 450), () => _runSearch(query));
-  }
-
-  Future<void> _runSearch(String query) async {
-    // TODO: replace with BLoC dispatch -> GET /users/search?q=
-    await Future<void>.delayed(const Duration(milliseconds: 600));
-    if (!mounted) return;
-    final mock = _mockUsers.where((u) {
-      final q = query.toLowerCase();
-      return u.displayName.toLowerCase().contains(q) || u.username.toLowerCase().contains(q);
-    }).toList();
-    setState(() {
-      _results = mock;
-      _state = mock.isEmpty ? _SearchState.empty : _SearchState.results;
-    });
-  }
-
-  void _setStatus(String uid, ContactStatus status) {
-    setState(() {
-      _results = _results.map((u) => u.uid == uid ? u.copyWith(status: status) : u).toList();
+    _debounce = Timer(const Duration(milliseconds: 450), () {
+      if (mounted) {
+        context.read<SearchUsersBloc>().add(SearchQueryChanged(query));
+      }
     });
   }
 
@@ -110,49 +82,84 @@ class _SearchUsersScreenState extends State<SearchUsersScreen> {
   }
 
   Widget _buildBody(AppColors colors) {
-    switch (_state) {
-      case _SearchState.idle:
-        return const Center(
-          child: PulseEmptyState(
-            icon: Icons.search_rounded,
-            title: 'Search for people',
-            message: 'Find friends by their name or username\nto start chatting on Pulse.',
-          ),
-        );
-      case _SearchState.loading:
-        return ListView.builder(
-          padding: EdgeInsets.symmetric(vertical: 8.h),
-          itemCount: 5,
-          itemBuilder: (_, _) => const _SearchResultSkeleton(),
-        );
-      case _SearchState.empty:
-        return const Center(
-          child: PulseEmptyState(
-            icon: Icons.person_search_rounded,
-            title: 'No one found',
-            message: 'Try a different name or check the\nusername spelling.',
-          ),
-        );
-      case _SearchState.results:
-        return AnimatedSwitcher(
-          duration: const Duration(milliseconds: 200),
-          child: ListView.builder(
-            key: const ValueKey('results'),
+    return BlocBuilder<SearchUsersBloc, SearchUsersState>(
+      builder: (context, state) {
+        if (state is SearchIdle) {
+          return const Center(
+            child: PulseEmptyState(
+              icon: Icons.search_rounded,
+              title: 'Search for people',
+              message: 'Find friends by their name or username\nto start chatting on Pulse.',
+            ),
+          );
+        }
+
+        if (state is SearchLoading) {
+          return ListView.builder(
             padding: EdgeInsets.symmetric(vertical: 8.h),
-            itemCount: _results.length,
-            itemBuilder: (context, i) {
-              final user = _results[i];
-              return ContactUserTile(
-                user: user,
-                onSendRequest: () => _setStatus(user.uid, ContactStatus.pendingSent),
-                onCancelRequest: () => _setStatus(user.uid, ContactStatus.none),
-                onMessage: () {},
-                onUnblock: () => _setStatus(user.uid, ContactStatus.none),
-              );
-            },
-          ),
-        );
-    }
+            itemCount: 5,
+            itemBuilder: (_, _) => const _SearchResultSkeleton(),
+          );
+        }
+
+        if (state is SearchEmpty) {
+          return const Center(
+            child: PulseEmptyState(
+              icon: Icons.person_search_rounded,
+              title: 'No one found',
+              message: 'Try a different name or check the\nusername spelling.',
+            ),
+          );
+        }
+
+        if (state is SearchFailure) {
+          return Center(
+            child: Padding(
+              padding: EdgeInsets.all(24.r),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.error_outline_rounded, color: colors.error, size: 48.sp),
+                  SizedBox(height: 16.h),
+                  Text(
+                    state.error,
+                    textAlign: TextAlign.center,
+                    style: AppTextStyles.w500.copyWith(fontSize: 14.sp, color: colors.textPrimary),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+
+        if (state is SearchSuccess) {
+          final results = state.results;
+          return AnimatedSwitcher(
+            duration: const Duration(milliseconds: 200),
+            child: ListView.builder(
+              key: const ValueKey('results'),
+              padding: EdgeInsets.symmetric(vertical: 8.h),
+              itemCount: results.length,
+              itemBuilder: (context, i) {
+                final user = results[i];
+                return ContactUserTile(
+                  key: ValueKey(user.uid),
+                  user: user,
+                  onSendRequest: () => context.read<SearchUsersBloc>().add(SendRequest(user)),
+                  onCancelRequest: () => context.read<SearchUsersBloc>().add(CancelRequest(user)),
+                  onMessage: () {
+                    // Navigate to chat screen or show details in future releases
+                  },
+                  onUnblock: () => context.read<SearchUsersBloc>().add(UnblockUserInSearch(user)),
+                );
+              },
+            ),
+          );
+        }
+
+        return const SizedBox.shrink();
+      },
+    );
   }
 }
 
@@ -292,19 +299,3 @@ class _SearchResultSkeletonState extends State<_SearchResultSkeleton> with Singl
     );
   }
 }
-
-// ----- Mock data: remove once SearchUsersBloc is wired in -----
-final _mockUsers = <ContactUser>[
-  const ContactUser(
-    uid: '1',
-    username: 'arjun.codes',
-    displayName: 'Arjun Mehta',
-    status: ContactStatus.none,
-    isOnline: true,
-    mutualContactsCount: 3,
-  ),
-  const ContactUser(uid: '2', username: 'priya_dev', displayName: 'Priya Sharma', status: ContactStatus.pendingSent),
-  const ContactUser(uid: '3', username: 'rohan.k', displayName: 'Rohan Kapoor', status: ContactStatus.none, mutualContactsCount: 1),
-  const ContactUser(uid: '4', username: 'sneha.codes', displayName: 'Sneha Iyer', status: ContactStatus.friends, isOnline: true),
-  const ContactUser(uid: '5', username: 'vikram_t', displayName: 'Vikram Thakur', status: ContactStatus.blockedByMe),
-];
